@@ -5,6 +5,7 @@ import { Store } from 'tough-cookie';
 import RSA from 'node-rsa'
 import * as iconv from 'iconv-lite'
 import * as path from 'path'
+import * as pcst from "./types"
 
 var FileCookieStore = require('tough-cookie-filestore');
 
@@ -16,6 +17,18 @@ let BAIDUPAN_HEADERS = {
 }
 
 class LoginFailed extends Error { }
+
+class PCSRequestError extends Error {
+    resp: requests.Response | null
+    err: any
+    name: string
+    constructor(name: string, error?: any, resp: requests.Response | null = null) {
+        super()
+        this.name = name
+        this.err = error
+        this.resp = resp
+    }
+}
 
 function check_login() {
     return function (target: any, propertyKey: string, descriptor: PropertyDescriptor) {
@@ -465,8 +478,14 @@ export default class PCS extends PCSBase {
      * 获取配额信息  
      * {"errno":0,"total":配额字节数,"used":已使用字节数,"request_id":请求识别号}
      */
-    quota() {
-        return this._request('quota')
+    async quota() {
+        let resp
+        try {
+            resp = await this._request('quota')
+            return JSON.parse(resp.body) as pcst.PCSQuotaResult
+        } catch (error) {
+            throw new PCSRequestError("quota", error, resp)
+        }
     }
 
     /**
@@ -482,17 +501,28 @@ export default class PCS extends PCSBase {
      * @param extra_params 
      * @param is_share 是否是分享的文件夹(大概)
      */
-    list_files(remote_path: string, by: "name" | "time" | "size" = "name", order: "desc" | "asc" = "desc", limit: null | { start: number, end: number } = null, extra_params: any = null, is_share = false) {
+    async list_files(remote_path: string, by: "name" | "time" | "size" = "name", order: "desc" | "asc" = "desc", limit: null | { start: number, end: number } = null, extra_params: any = null, is_share = false): Promise<pcst.PCSListFilesResult> {
         let desc = order == "desc" ? "1" : "0"
         let params: any = {}
         if (extra_params) params = { ...extra_params }
         params.dir = remote_path
         params.order = by
         params.desc = desc
+        let resp = null
         if (is_share) {
-            return this._request('/share/list', undefined, "https://pan.baidu.com/share/list", params, undefined, undefined)
+            try {
+                resp = await this._request('/share/list', undefined, "https://pan.baidu.com/share/list", params, undefined, undefined)
+                return JSON.parse(resp.body) as pcst.PCSListFilesResult
+            } catch (error) {
+                throw new PCSRequestError("list_files", error, resp)
+            }
         }
-        return this._request("list", "list", undefined, params)
+        try {
+            resp = await this._request("list", "list", undefined, params)
+            return JSON.parse(resp.body) as pcst.PCSListFilesResult
+        } catch (error) {
+            throw new PCSRequestError("list_files", error, resp)
+        }
     }
 
     /**
@@ -504,24 +534,36 @@ export default class PCS extends PCSBase {
      * 文件名或路径名开头结尾不能是 . 或空白字符，空白字符包括:
      * \r, \n, \t, 空格, \0, \x0B 。
      */
-    mkdir(remote_path: string) {
+    async mkdir(remote_path: string) {
         let data = {
             'path': remote_path,
             'isdir': "1",
             "size": "",
             "block_list": "[]"
         }
-        return this._request('create', 'post', undefined, undefined, data, undefined, undefined)
+        let resp
+        try {
+            resp = await this._request('create', 'post', undefined, undefined, data, undefined, undefined)
+            return JSON.parse(resp.body) as pcst.PCSMkDirResult
+        } catch (error) {
+            throw new PCSRequestError("mkdir", error, resp)
+        }
     }
 
     /**
      * 删除文件或文件夹
      * @param path_list  待删除的文件或文件夹列表,每一项为服务器路径
      */
-    delete(path_list: string[]) {
+    async delete(path_list: string[]) {
         let data = { filelist: JSON.stringify(path_list) }
         let url = `http://${BAIDUPAN_SERVER}/api/filemanager?opera=delete`
-        return this._request('filemanager', 'delete', url, undefined, data)
+        let resp
+        try {
+            resp = await this._request('filemanager', 'delete', url, undefined, data)
+            return JSON.parse(resp.body) as pcst.PCSDeleteResult
+        } catch (error) {
+            throw new PCSRequestError("delete", error, resp)
+        }
     }
 
     /**
@@ -529,7 +571,7 @@ export default class PCS extends PCSBase {
      * @param path_list 在百度盘上要移动的源文件path
      * @param dest 要移动到的目录
      */
-    move(path_list: string[], dest: string) {
+    async move(path_list: string[], dest: string) {
         let __path = function (path: string) {
             let ps = path.split("/")
             if (path.endsWith("/")) {
@@ -552,7 +594,13 @@ export default class PCS extends PCSBase {
             filelist: JSON.stringify(filelist),
         }
         let url = `http://${BAIDUPAN_SERVER}/api/filemanager`
-        return this._request('filemanager', 'move', url, params, data)
+        let resp
+        try {
+            resp = await this._request('filemanager', 'move', url, params, data)
+            return JSON.parse(resp.body) as pcst.PCSMoveResult
+        } catch (error) {
+            throw new PCSRequestError("move", error, resp)
+        }
     }
 
     /**
@@ -560,7 +608,7 @@ export default class PCS extends PCSBase {
     * @param path_list 在百度盘上要复制的源文件path
     * @param dest 要复制到的目录
     */
-    copy(path_list: string[], dest: string) {
+    async copy(path_list: string[], dest: string) {
         let __path = function (path: string) {
             let ps = path.split("/")
             if (path.endsWith("/")) {
@@ -583,27 +631,45 @@ export default class PCS extends PCSBase {
             filelist: JSON.stringify(filelist),
         }
         let url = `http://${BAIDUPAN_SERVER}/api/filemanager`
-        return this._request('filemanager', 'copy', url, params, data)
+        let resp
+        try {
+            resp = await this._request('filemanager', 'copy', url, params, data)
+            return JSON.parse(resp.body) as pcst.PCSCopyResult
+        } catch (error) {
+            throw new PCSRequestError("copy", error, resp)
+        }
     }
 
     /**
      * 重命名
      * @param rename_pair_list 需要重命名的文件(夹)(path:路径,newname:新名称)
      */
-    rename(rename_pair_list: { path: string, newname: string }[]) {
+    async rename(rename_pair_list: { path: string, newname: string }[]) {
         let data = { filelist: JSON.stringify(rename_pair_list) }
         let params = { 'opera': 'rename' }
         let url = `http://${BAIDUPAN_SERVER}/api/filemanager`
-        return this._request('filemanager', 'rename', url, params, data)
+        let resp
+        try {
+            resp = await this._request('filemanager', 'rename', url, params, data)
+            return JSON.parse(resp.body) as pcst.PCSRenameResult
+        } catch (error) {
+            throw new PCSRequestError("rename", error, resp)
+        }
     }
 
     /**
      * 获得文件(s)的metainfo
      * @param file_list 文件路径列表,如 ['/aaa.txt']
      */
-    meta(file_list: string[]) {
+    async meta(file_list: string[]) {
         let data = { "target": JSON.stringify(file_list) }
-        return this._request("filemetas?blocks=0&dlink=1", "filemetas", undefined, undefined, data)
+        let resp
+        try {
+            resp = await this._request("filemetas?blocks=0&dlink=1", "filemetas", undefined, undefined, data)
+            return JSON.parse(resp.body) as pcst.PCSMetaResult
+        } catch (error) {
+            throw new PCSRequestError("meta", error, resp)
+        }
     }
 
     /**
@@ -634,7 +700,7 @@ export default class PCS extends PCSBase {
      * @param recursion 
      * @param limit 
      */
-    search(path: string, keyword: string, page = 1, recursion = 1, limit = 1000) {
+    async  search(path: string, keyword: string, page = 1, recursion = 1, limit = 1000) {
         let params = {
             'dir': path,
             'recursion': recursion,
@@ -642,7 +708,13 @@ export default class PCS extends PCSBase {
             'page': page.toString(),
             'num': limit.toString()
         }
-        return this._request('search', 'search', undefined, params)
+        let resp
+        try {
+            resp = await this._request('search', 'search', undefined, params)
+            return JSON.parse(resp.body) as pcst.PCSSearchResult
+        } catch (error) {
+            throw new PCSRequestError("search", error, resp)
+        }
     }
 
     /**
@@ -670,7 +742,7 @@ export default class PCS extends PCSBase {
      * @param limit 返回条目控制
      * @param page 返回条目的分页控制, 当前页码
      */
-    list_recycle_bin(by: "name" | "time" | "size" = "time", order: "desc" | "asc" = "desc", limit: { start: number, end: number } = { start: 0, end: 1000 }, page = 1) {
+    async list_recycle_bin(by: "name" | "time" | "size" = "time", order: "desc" | "asc" = "desc", limit: { start: number, end: number } = { start: 0, end: 1000 }, page = 1) {
         let desc = order == "desc" ? "1" : "0"
         let params = {
             'start': limit.start,
@@ -681,7 +753,13 @@ export default class PCS extends PCSBase {
             'page': page
         }
         let url = `https://${BAIDUPAN_SERVER}/api/recycle/list`
-        return this._request('recycle', 'list', url, params)
+        let resp
+        try {
+            resp = await this._request('recycle', 'list', url, params)
+            return JSON.parse(resp.body) as pcst.PCSListRecycleBinResult
+        } catch (error) {
+            throw new PCSRequestError("list_recycle_bin", error, resp)
+        }
     }
 
     list_shared_folder(shareid: string, uk: string, path: string, page = 1, number = 100) {
@@ -695,6 +773,8 @@ export default class PCS extends PCSBase {
             "clienttype": 0
         }, true)
     }
+
+    
 
     /**
      * 保存分享文件列表到自己的网盘, 支持密码, 支持文件过滤的回调函数

@@ -3,7 +3,7 @@
 
 特别感谢
 ------------
-本API是[baidupcsapi](https://github.com/ly0/baidupcsapi)的JS移植版
+本API是[baidupcsapi](https://github.com/ly0/baidupcsapi)的NodeJS移植版
 
 Installation
 ------------
