@@ -1,5 +1,5 @@
 node_modules/
-*.js
+lib/
 package-lock.json
 *.cookies
-lib/
+src/test.ts

@@ -1,7 +1,6 @@
 import * as readlineSync from 'readline-sync'
 import * as requests from 'request'
 import * as fs from 'fs'
-import { Store } from 'tough-cookie';
 import RSA from 'node-rsa'
 import * as iconv from 'iconv-lite'
 import * as path from 'path'
@@ -13,8 +12,9 @@ let BAIDUPAN_SERVER = 'pan.baidu.com'
 let BAIDUPCS_SERVER = 'pcs.baidu.com'
 let BAIDUPAN_HEADERS = {
     "Referer": "http://pan.baidu.com/disk/home",
-    "User-Agent": "netdisk;4.6.2.0;PC;PC-Windows;10.0.10240;WindowsBaiduYunGuanJia"
+    "User-Agent": "netdisk;4.6.2.0;PC;PC-Windows;10.0.10240;WindowsBaiduYunGuanJia",
 }
+type LoginedJarCreator = (self: PCSBase) => Promise<requests.CookieJar>
 
 class LoginFailed extends Error { }
 
@@ -39,12 +39,15 @@ function check_login() {
                 let that = this as PCSBase
                 try {
                     let ret = _ret as requests.Response
-                    let foo = JSON.parse(ret.body)
-                    if ("errno" in foo && foo.errno == -6) {
-                        let path = `.${that.username}.cookies`
-                        if (fs.existsSync(path))
-                            fs.unlinkSync(path)
-                        that._initiate()
+                    let body = ret.body + ""
+                    if (body.startsWith("{")) {
+                        let foo = JSON.parse(ret.body)
+                        if ("errno" in foo && foo.errno == -6) {
+                            let init = that.logined_jar_creator(that)
+                            that.init = new Promise((resolve, reject) => {
+                                init.then((jar) => that.cookies = jar).then(() => that._initiate()).then(resolve).catch(reject)
+                            })
+                        }
                     }
                 } catch (error) {
                     throw new LoginFailed("User unsigned in.")
@@ -60,32 +63,179 @@ function default_captcha_handler(image_url: string, encoding: string = "gbk"): s
     console.log(image_url)
     return iconv.decode(new Buffer(readlineSync.question("Input verify code > ", { encoding: 'binary' }), "binary"), encoding)
 }
-class PCSBase {
-    codeString: string | null = null
-    // api_template = `http://${BAIDUPAN_SERVER}/api/{0}`
-    cookies: requests.CookieJar
-    store: Store
-    username: string
-    password: string
-    init: Promise<void>
-    user: any = {
-    }
-    captcha_func: (image_url: string) => string
-    verify_func: (msg: string) => string
 
-    constructor(username: string, password: string, captcha_func: (image_url: string) => string = default_captcha_handler, verify_func: (msg: string) => string = readlineSync.question) {
-        this.username = username
-        this.password = password
-        this.captcha_func = captcha_func
-        this.verify_func = verify_func
-        let cookies_file = `.${this.username}.cookies`
+export function create_username_password_jar_creator(
+    username: string,
+    password: string,
+    captcha_func: (image_url: string) => string = default_captcha_handler,
+    verify_func: (msg: string) => string = readlineSync.question
+): LoginedJarCreator {
+    return async (self: PCSBase) => {
+        let cookies_file = `.${username}.cookies`
         if (!fs.existsSync(cookies_file)) {
             fs.closeSync(fs.openSync(cookies_file, 'w'));
         }
-        this.store = new FileCookieStore(cookies_file)
-        this.cookies = requests.jar(this.store)
+        let store = null;
+        while (!store)
+            try {
+                store = new FileCookieStore(cookies_file)
+            } catch (error) {
+                if (fs.existsSync(cookies_file)) fs.unlinkSync(cookies_file)
+                fs.closeSync(fs.openSync(cookies_file, 'w'));
+            }
+        let cookies = requests.jar(store)
+        self.cookies = cookies
         PCSBase.set_pcs_server(PCSBase.get_fastest_pcs_server())
-        this.init = this._initiate()
+
+
+        function _get_captcha(code_string: string) {
+            if (code_string) {
+                return captcha_func("https://passport.baidu.com/cgi-bin/genimage?" + code_string)
+            } else {
+                return ""
+            }
+        }
+
+        async function _check_account_exception(content: string) {
+            let err_id = (/err_no=([\d]+)/g.exec(content) as string[])[1]
+            if (err_id == '0')
+                return
+            if (err_id == '120021') {
+                let auth_token = (/authtoken=([^&]+)/g.exec(content) as string[])[1]
+                let loginproxy_url = (/loginproxy=([^&]+)/g.exec(content) as string[])[1]
+                let resp = await self._get('https://passport.baidu.com/v2/sapi/authwidgetverify', {
+                    'authtoken': auth_token,
+                    'type': 'email',
+                    'apiver': 'v3',
+                    'action': 'send',
+                    'vcode': '',
+                    'questionAndAnswer': '',
+                    'needsid': '',
+                    'rsakey': '',
+                    'countrycode': '',
+                    'subpro': '',
+                    'callback': '',
+                    'tpl': 'mn',
+                    'u': 'https://www.baidu.com/'
+                })
+                if (resp.statusCode == 200) {
+                    while (true) {
+                        let vcode = verify_func("Verification Code")
+                        let vresp = await self._get('https://passport.baidu.com/v2/sapi/authwidgetverify', {
+                            'authtoken': auth_token,
+                            'type': 'email',
+                            'apiver': 'v3',
+                            'action': 'check',
+                            'vcode': vcode,
+                            'questionAndAnswer': '',
+                            'needsid': '',
+                            'rsakey': '',
+                            'countrycode': '',
+                            'subpro': '',
+                            'callback': ''
+                        })
+                        let vresp_data = JSON.parse(vresp.body)
+                        if (vresp_data['errno'] == 110000) {
+                            await self._get(loginproxy_url)
+                            return
+                        }
+                    }
+                } else {
+                    throw new LoginFailed("发送安全验证请求失败")
+                }
+            }
+            let msg = `unknown err_id=${err_id}`
+            if (login_err[err_id]) {
+                msg = login_err[err_id].msg
+            }
+            throw new LoginFailed(msg)
+        }
+
+        async function _login() {
+            let bduss = self._find_cookie("baidu.com", "/", "BDUSS")
+            if (bduss) {
+                self.user.BDUSS = bduss.value
+                return;
+            }
+            let captcha = ''
+            let code_string = ''
+            let [pubkey, rsakey] = await self._get_publickey()
+            let rsa = new RSA(pubkey)
+            rsa.setOptions({
+                encryptionScheme: "pkcs1"
+            })
+            let password_rsaed = rsa.encrypt(password, 'base64')
+            let result
+            while (true) {
+                self.user.token = await self._get_token()
+                let login_data = {
+                    'staticpage': 'http://www.baidu.com/cache/user/html/v3Jump.html',
+                    'charset': 'UTF-8',
+                    'token': self.user['token'],
+                    'tpl': 'pp',
+                    'subpro': '',
+                    'apiver': 'v3',
+                    'tt': parseInt((new Date().getTime() / 1000).toString()).toString(),
+                    'codestring': code_string,
+                    'isPhone': 'false',
+                    'safeflg': '0',
+                    'u': 'https://passport.baidu.com/',
+                    'quick_user': '0',
+                    'logLoginType': 'pc_loginBasic',
+                    'loginmerge': 'true',
+                    'logintype': 'basicLogin',
+                    'username': username,
+                    'password': password_rsaed,
+                    'verifycode': captcha,
+                    'mem_pass': 'on',
+                    'rsakey': (rsakey),
+                    'crypttype': 12,
+                    'ppui_logintime': '50918',
+                    'callback': 'parent.bd__pcbs__oa36qm'
+                }
+                result = await self._post('https://passport.baidu.com/v2/api/?login', login_data)
+                let body: string = result.body
+                if (body.includes("err_no=257") || body.includes("err_no=6")) {
+                    let re = /codeString=(.*?)&/g
+                    let code_strings = body.match(re)
+                    if (code_strings) {
+                        code_string = code_strings[0].replace("codeString=", "").replace("&", "")
+                    }
+                    // self.codeString = code_string
+                    captcha = _get_captcha(code_string)
+                    continue
+                }
+                break
+            }
+            await _check_account_exception(result.body)
+            if (result.statusCode != 200) {
+                throw new LoginFailed("Login failed.");
+            }
+            self.user.token = await self._get_token()
+            await self.user_info()
+        }
+        await _login()
+        await self._initiate()
+        return cookies
+    }
+}
+
+
+class PCSBase {
+    cookies: requests.CookieJar = requests.jar()//TODO
+    init: Promise<void>
+    logined_jar_creator: LoginedJarCreator
+    user: any = {
+    }
+
+
+    constructor(logined_jar_creator: LoginedJarCreator) {
+        this.logined_jar_creator = logined_jar_creator
+        PCSBase.set_pcs_server(PCSBase.get_fastest_pcs_server())
+        let init = logined_jar_creator(this)
+        this.init = new Promise((resolve, reject) => {
+            init.then((jar) => this.cookies = jar).then(() => this._initiate()).then(resolve).catch(reject)
+        })
     }
 
     static async get_fastest_pcs_server() {
@@ -113,65 +263,7 @@ class PCSBase {
             this.user.BDUSS = bduss.value
             return;
         }
-        await this._login()
-    }
-
-    async _login() {
-        let captcha = ''
-        let code_string = ''
-        let [pubkey, rsakey] = await this._get_publickey()
-        let rsa = new RSA(pubkey)
-        rsa.setOptions({
-            encryptionScheme: "pkcs1"
-        })
-        let password_rsaed = rsa.encrypt(this.password, 'base64')
-        let result
-        while (true) {
-            let login_data = {
-                'staticpage': 'http://www.baidu.com/cache/user/html/v3Jump.html',
-                'charset': 'UTF-8',
-                'token': this.user['token'],
-                'tpl': 'pp',
-                'subpro': '',
-                'apiver': 'v3',
-                'tt': parseInt((new Date().getTime() / 1000).toString()).toString(),
-                'codestring': code_string,
-                'isPhone': 'false',
-                'safeflg': '0',
-                'u': 'https://passport.baidu.com/',
-                'quick_user': '0',
-                'logLoginType': 'pc_loginBasic',
-                'loginmerge': 'true',
-                'logintype': 'basicLogin',
-                'username': this.username,
-                'password': password_rsaed,
-                'verifycode': captcha,
-                'mem_pass': 'on',
-                'rsakey': (rsakey),
-                'crypttype': 12,
-                'ppui_logintime': '50918',
-                'callback': 'parent.bd__pcbs__oa36qm'
-            }
-            result = await this._post('https://passport.baidu.com/v2/api/?login', login_data)
-            let body: string = result.body
-            if (body.includes("err_no=257") || body.includes("err_no=6")) {
-                let re = /codeString=(.*?)&/g
-                let code_strings = body.match(re)
-                if (code_strings) {
-                    code_string = code_strings[0].replace("codeString=", "").replace("&", "")
-                }
-                this.codeString = code_string
-                captcha = this._get_captcha(code_string)
-                continue
-            }
-            break
-        }
-        await this._check_account_exception(result.body)
-        if (result.statusCode != 200) {
-            throw new LoginFailed("Login failed.");
-        }
-        this.user.token = await this._get_token()
-        await this.user_info()
+        await this.logined_jar_creator(this)
     }
 
     async _get_publickey(): Promise<string[]> {
@@ -220,70 +312,6 @@ class PCSBase {
         let ret = await this._get("http://www.baidu.com").then(() => this._get(url))
         let foo = JSON.parse(ret.body.replace(/'/g, '"'))
         return foo.data.token
-    }
-
-    _get_captcha(code_string: string) {
-        if (code_string) {
-            return this.captcha_func("https://passport.baidu.com/cgi-bin/genimage?" + code_string)
-        } else {
-            return ""
-        }
-    }
-
-
-    async _check_account_exception(content: string) {
-        let err_id = (/err_no=([\d]+)/g.exec(content) as string[])[1]
-        if (err_id == '0')
-            return
-        if (err_id == '120021') {
-            let auth_token = (/authtoken=([^&]+)/g.exec(content) as string[])[1]
-            let loginproxy_url = (/loginproxy=([^&]+)/g.exec(content) as string[])[1]
-            let resp = await this._get('https://passport.baidu.com/v2/sapi/authwidgetverify', {
-                'authtoken': auth_token,
-                'type': 'email',
-                'apiver': 'v3',
-                'action': 'send',
-                'vcode': '',
-                'questionAndAnswer': '',
-                'needsid': '',
-                'rsakey': '',
-                'countrycode': '',
-                'subpro': '',
-                'callback': '',
-                'tpl': 'mn',
-                'u': 'https://www.baidu.com/'
-            })
-            if (resp.statusCode == 200) {
-                while (true) {
-                    let vcode = this.verify_func("Verification Code")
-                    let vresp = await this._get('https://passport.baidu.com/v2/sapi/authwidgetverify', {
-                        'authtoken': auth_token,
-                        'type': 'email',
-                        'apiver': 'v3',
-                        'action': 'check',
-                        'vcode': vcode,
-                        'questionAndAnswer': '',
-                        'needsid': '',
-                        'rsakey': '',
-                        'countrycode': '',
-                        'subpro': '',
-                        'callback': ''
-                    })
-                    let vresp_data = JSON.parse(vresp.body)
-                    if (vresp_data['errno'] == 110000) {
-                        await this._get(loginproxy_url)
-                        return
-                    }
-                }
-            } else {
-                throw new LoginFailed("发送安全验证请求失败")
-            }
-        }
-        let msg = `unknown err_id=${err_id}`
-        if (login_err[err_id]) {
-            msg = login_err[err_id].msg
-        }
-        throw new LoginFailed(msg)
     }
 
     __request(uri: string, callback: (err: any, resp: requests.Response) => void = () => { }, method: string = "", url: string | any = null, extra_params: any = null, data: any = null, files: NodeJS.ReadableStream | null = null, other: any = {}): requests.Request {
@@ -361,96 +389,6 @@ class PCSBase {
                 else (resolve(resp))
             }, method, url, extra_params, data, files, other)
         })
-        // let response: requests.Response
-        // let params: any = {
-        //     method: method,
-        //     app_id: "250528",
-        //     BDUSS: this.user.BDUSS,
-        //     t: parseInt((new Date().getTime() / 1000).toString()).toString(),
-        //     bdstoken: this.user.token
-        // }
-        // if (extra_params)
-        //     for (let key in extra_params)
-        //         params[key] = extra_params[key]
-        // let headers: any = { ...BAIDUPAN_HEADERS }
-        // if (other.headers) {
-        //     for (let key in other.headers)
-        //         headers[key] = other.headers[key]
-        // }
-        // if (!url) {
-        //     url = `http://${BAIDUPAN_SERVER}/api/${uri}`
-        // }
-        // let api = url as string
-        // for (let key in params) {
-        //     if (api.includes("?")) {
-        //         api = `${api}&${key}=${params[key]}`
-        //     } else {
-        //         api = `${api}?${key}=${params[key]}`
-        //     }
-        // }
-        // url = api
-        // if (data || files) {
-        //     if (data) {
-        //         response = await new Promise<requests.Response>((resolve, reject) => {
-        //             requests.post({
-        //                 url: url,
-        //                 form: data,
-        //                 headers: headers,
-        //                 jar: this.cookies,
-        //                 callback: (err, res) => {
-        //                     if (err) {
-        //                         reject(err)
-        //                     } else {
-        //                         resolve(res)
-        //                     }
-        //                 }
-        //             })
-        //         })
-        //     } else {
-        //         response = await new Promise<requests.Response>((resolve, reject) => {
-        //             fs.createReadStream(files as string).pipe(requests.post({
-        //                 url: url,
-        //                 form: data,
-        //                 headers: headers,
-        //                 jar: this.cookies,
-        //                 callback: (err, res) => {
-        //                     if (err) {
-        //                         reject(err)
-        //                     } else {
-        //                         resolve(res)
-        //                     }
-        //                 }
-        //             }))
-        //         })
-        //         // requests.post({
-        //         //     url: url,
-        //         // })
-        //     }
-        // } else {
-        //     let method: Function
-        //     if (uri == 'filemanager' || uri == 'rapidupload' || uri == 'filemetas' || uri == 'precreate') {
-        //         method = requests.post
-        //     } else {
-        //         method = requests.get
-        //     }
-        //     response = await new Promise<requests.Response>((resolve, reject) => {
-        //         method({
-        //             url: url,
-        //             form: params,
-        //             headers: headers,
-        //             jar: this.cookies,
-        //             callback: (err: any, res: requests.Response) => {
-        //                 if (err) {
-        //                     reject(err)
-        //                 } else {
-        //                     resolve(res)
-        //                 }
-        //             },
-        //             ...other
-        //         })
-        //     })
-        // }
-        // return response
     }
 
     async user_info() {
@@ -460,17 +398,16 @@ class PCSBase {
         let url = 'https://pan.baidu.com/rest/2.0/membership/user'
         return await this._request('membership/user', 'user', url, params, undefined, undefined, arguments)
     }
-
     _find_cookie(domain: string, path: string, key: string) {
-        return new Promise<requests.Cookie | null>((resolve, reject) => {
-            this.store.findCookie(domain, path, key, (err, cookie) => {
-                if (err) {
-                    reject(err)
-                } else {
-                    resolve(cookie)
-                }
-            })
-        })
+        let cookies = this.cookies.getCookies(`https://${domain}${path}`)
+        if (cookies) {
+            for (let cookie of cookies)
+                if (cookie.key == key)
+                    return (cookie)
+            return (null)
+        }
+        else
+            return (null)
     }
 }
 export default class PCS extends PCSBase {
@@ -511,7 +448,7 @@ export default class PCS extends PCSBase {
         let resp = null
         if (is_share) {
             try {
-                resp = await this._request('/share/list', undefined, "https://pan.baidu.com/share/list", params, undefined, undefined)
+                resp = await this._request('/share/list', undefined, "https://pan.baidu.com/share/list", params, undefined, undefined);
                 return JSON.parse(resp.body) as pcst.PCSListFilesResult
             } catch (error) {
                 throw new PCSRequestError("list_files", error, resp)
@@ -774,7 +711,7 @@ export default class PCS extends PCSBase {
         }, true)
     }
 
-    
+
 
     /**
      * 保存分享文件列表到自己的网盘, 支持密码, 支持文件过滤的回调函数

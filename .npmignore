@@ -1,2 +1,4 @@
 .gitignore
 src/
+lib/test.*
+*.cookies

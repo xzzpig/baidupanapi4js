@@ -32,9 +32,7 @@ Simple Example
 import PCS from "baidupanapi";
 
 let pcs = new PCS("username", "password")
-pcs.init.then(() => {
-    return pcs.quota()
-}).then((res) => {
-    console.log(res.body)
-}).catch(console.error)
-```
+pcs.init
+    .then(() => pcs.quota()).then(console.log)
+    .then(() => pcs.list_files("/")).then(console.log)
+    .catch(console.error)
