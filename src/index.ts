@@ -411,6 +411,33 @@ class PCSBase {
     }
 }
 export default class PCS extends PCSBase {
+
+    /**
+     * 获取用户名
+     */
+    async username() {
+        return new Promise((resolve, reject) => {
+            try {
+                requests.get("https://pan.baidu.com/disk/home", {
+                    jar: this.cookies
+                }, (error, res) => {
+                    if (error) return reject(error)
+                    let body = res.body as string
+                    let start = body.indexOf(`initPrefetch('399657aa63a7226a62f919fd7e639ba8', '`)
+                    if (start != -1) {
+                        let end = body.indexOf(`');`, start)
+                        return resolve(body.substring(start + 50, end))
+                    }else{
+                        reject(new PCSRequestError("username", error, null))
+                    }
+                })
+            } catch (error) {
+                console.error(error)
+                reject(new PCSRequestError("username", error, null))
+            }
+        })
+    }
+
     /**
      * 获取配额信息  
      * {"errno":0,"total":配额字节数,"used":已使用字节数,"request_id":请求识别号}

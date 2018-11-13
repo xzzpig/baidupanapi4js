@@ -1,10 +1,10 @@
 {
   "name": "baidupanapi",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "百度云盘API",
   "main": "lib/index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "tsc && node lib/test.js"
   },
   "repository": {
     "type": "git",
