@@ -2,3 +2,4 @@
 src/
 lib/test.*
 *.cookies
+tsconfig.json

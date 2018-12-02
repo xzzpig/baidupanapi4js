@@ -428,7 +428,7 @@ export default class PCS extends PCSBase {
                 }, (error, res) => {
                     if (error) return reject(error)
                     let body = res.body as string
-                    let start = body.indexOf(`initPrefetch('399657aa63a7226a62f919fd7e639ba8', '`)
+                    let start = body.search(/initPrefetch\('.*', '/g)
                     if (start != -1) {
                         let end = body.indexOf(`');`, start)
                         return resolve(body.substring(start + 50, end))

@@ -1,6 +1,6 @@
 {
   "name": "baidupanapi",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "百度云盘API",
   "main": "lib/index.js",
   "scripts": {
