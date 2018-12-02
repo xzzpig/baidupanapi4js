@@ -18,9 +18,10 @@ TIP
 Usage
 ------------
 ```TypeScript
-import PCS from "baidupanapi";
+import PCS, * as bdapi from "baidupanapi"
 
-let pcs = new PCS("username", "password")
+let pcs = new PCS(bdapi.create_username_password_jar_creator("username", "password"))
+
 pcs.init.then(() => {
     //DO SOMETHINE HERE
 }).catch(console.error)
@@ -29,10 +30,13 @@ pcs.init.then(() => {
 Simple Example
 -----------
 ```TypeScript
-import PCS from "baidupanapi";
+import PCS, * as bdapi from "baidupanapi"
 
-let pcs = new PCS("username", "password")
+let pcs = new PCS(bdapi.create_username_password_jar_creator("username", "password"))
+
 pcs.init
     .then(() => pcs.quota()).then(console.log)
     .then(() => pcs.list_files("/")).then(console.log)
+    .then(() => pcs.username()).then(console.log)
     .catch(console.error)
+```

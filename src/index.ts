@@ -5,6 +5,7 @@ import RSA from 'node-rsa'
 import * as iconv from 'iconv-lite'
 import * as path from 'path'
 import * as pcst from "./types"
+import qs from "querystring"
 
 var FileCookieStore = require('tough-cookie-filestore');
 
@@ -331,14 +332,14 @@ class PCSBase {
                 headers[key] = other.headers[key]
         }
         if (!url) {
-            url = `http://${BAIDUPAN_SERVER}/api/${uri}`
+            url = `https://${BAIDUPAN_SERVER}/api/${uri}`
         }
         let api = url as string
         for (let key in params) {
             if (api.includes("?")) {
-                api = `${api}&${key}=${params[key]}`
+                api = `${api}&${qs.escape(key)}=${qs.escape(params[key])}`
             } else {
-                api = `${api}?${key}=${params[key]}`
+                api = `${api}?${qs.escape(key)}=${qs.escape(params[key])}`
             }
         }
         url = api
@@ -364,20 +365,24 @@ class PCSBase {
                 });
             }
         } else {
-            let method: Function
             if (uri == 'filemanager' || uri == 'rapidupload' || uri == 'filemetas' || uri == 'precreate') {
-                method = requests.post
+                return requests.post({
+                    url: url,
+                    form: params,
+                    headers: headers,
+                    jar: this.cookies,
+                    callback: callback,
+                    ...other
+                })
             } else {
-                method = requests.get
+                return requests.get({
+                    url: url,
+                    headers: headers,
+                    jar: this.cookies,
+                    callback: callback,
+                    ...other
+                })
             }
-            return method({
-                url: url,
-                form: params,
-                headers: headers,
-                jar: this.cookies,
-                callback: callback,
-                ...other
-            })
         }
     }
 
@@ -416,7 +421,7 @@ export default class PCS extends PCSBase {
      * 获取用户名
      */
     async username() {
-        return new Promise((resolve, reject) => {
+        return new Promise<string>((resolve, reject) => {
             try {
                 requests.get("https://pan.baidu.com/disk/home", {
                     jar: this.cookies
@@ -427,7 +432,7 @@ export default class PCS extends PCSBase {
                     if (start != -1) {
                         let end = body.indexOf(`');`, start)
                         return resolve(body.substring(start + 50, end))
-                    }else{
+                    } else {
                         reject(new PCSRequestError("username", error, null))
                     }
                 })

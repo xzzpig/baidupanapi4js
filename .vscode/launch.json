@@ -8,7 +8,8 @@
             "type": "node",
             "request": "launch",
             "name": "Test",
-            "program": "${workspaceFolder}\\lib\\test.js"
+            "program": "${workspaceFolder}\\lib\\test.js",
+            "outputCapture": "std"
         }
     ]
 }
